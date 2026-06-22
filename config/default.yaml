@@ -1,0 +1,82 @@
+# RateWalk default configuration.
+# Everything in the model path is tweakable here. See src/ratewalk/config.py
+# for the full schema and per-field documentation.
+
+country: US                       # multi-sovereign by design (US, GB, DE, JP, ...)
+
+state:
+  rate_mode: increments           # levels | increments (increments is more stationary)
+  increment_grid_bps: [-50, -25, 0, 25, 50, 75]
+  cpi_bins_yoy: [0.0, 2.0, 3.0, 5.0]   # edges -> 5 inflation regimes
+  alignment: decoupled            # event_time | calendar_time | decoupled
+
+markov:
+  model: conditional              # rate | cpi | conditional | semi_markov
+  estimation: exp_weighted        # full | exp_weighted | window
+  half_life_years: 8.0
+  prior: dirichlet
+  prior_strength: 1.0
+
+curve:
+  model: nss_regression           # nss_regression | parallel_shift
+  add_residual_noise: true
+  residual_scale_bps: 15.0
+
+instrument:
+  kind: single_bond               # single_bond | ladder | portfolio
+  held_tenor_years: 10.0
+  coupon_rate: null               # null -> par coupon from the issue curve
+  reinvestment_ladder:            # reinvest coupons across multiple tenors
+    "2": 0.3
+    "5": 0.4
+    "10": 0.3
+
+sim:
+  n_paths: 5000
+  steps_per_year: 12
+  seed: 42
+  jumps_enabled: true
+  jumps:                          # programmable, stackable jump models
+    - type: scenario_replay
+      scenario: covid_2020
+      inject_year_low: 1.0
+      inject_year_high: 8.0
+      fraction_of_paths: 0.15
+    - type: jump_diffusion
+      intensity_per_year: 0.10
+      size_dist: student_t
+      size_df: 3.0
+      size_scale_bps: 75.0
+      recovery_periods: 6
+
+credit:
+  enabled: false                  # turn on for corporates / munis / EM sovereigns
+  annual_default_prob: 0.0
+  recovery_rate: 0.4
+  coupon_delay_prob: 0.0
+  coupon_miss_prob: 0.0
+
+analytics:
+  var_levels: [0.95, 0.99]
+  duration_grid_years: [1, 2, 3, 5, 7, 10, 20, 30]
+  objective: cvar_adjusted_return
+  crra_gamma: 3.0
+  gmm_max_components: 4
+  sensitivity_draws: 300
+
+hedge:
+  enabled: false                  # optional; real-time option chain
+  agents: [etf_put, futures_option, swaption, all_in_one]
+  moneyness_grid: [0.90, 0.95, 1.00]
+  tenor_grid_years: [0.25, 0.5, 1.0]
+
+vol:
+  enabled: false                  # optional
+  target_annual_vol: 0.06
+  confidence_scaling: true
+
+horizon:
+  mode: dynamic                   # fixed | dynamic (agentic selection)
+  fixed_years: 10.0
+  candidate_years: [2, 5, 10, 20, 30]
+  objective: cvar_adjusted_return
