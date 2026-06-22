@@ -89,10 +89,10 @@ async function go(){
  const d=await r.json(); document.getElementById('stat').innerText='config '+d.config_hash;
  const h=d.headline.annualized_return_pct;
  document.getElementById('kpi').innerHTML=
-   `<div class=kpi>${h.median}% / yr</div>median annualized over ${d.headline.horizon_years}y<br>`+
+   `<div class=kpi>${h.p50}% / yr</div>median annualized over ${d.headline.horizon_years}y<br>`+
    `p5 ${h.p5}% &middot; p95 ${h.p95}% &middot; VaR95 ${(d.risk.VaR_CVaR['95'].VaR*100).toFixed(2)}%`;
  const g=d.risk.gmm;
- Plotly.newPlot('dist',[{x:[h.p5,h.p50||h.median,h.p95],type:'box',name:'ann %'}],
+ Plotly.newPlot('dist',[{x:[h.p5,h.p50,h.p95],type:'box',name:'ann %'}],
    {paper_bgcolor:'#11161d',plot_bgcolor:'#11161d',font:{color:'#9aa7b4'},margin:{t:10}});
  const s=d.duration_grid.surface;
  Plotly.newPlot('dur',[{x:s.map(p=>p.duration),y:s.map(p=>p.objective),type:'scatter',mode:'lines+markers',line:{color:'#e3b341'}}],
