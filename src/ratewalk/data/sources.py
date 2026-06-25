@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -100,20 +101,96 @@ _FRED_SERIES = {
 }
 
 
-def _load_fred(country: str, start: str, end: str) -> MacroData:
-    """Live FRED/ALFRED pull. Raises if no key or no network so callers can
-    fall back to synthetic."""
+_FRED_BASE = "https://api.stlouisfed.org/fred/series/observations"
+
+
+def _load_dotenv() -> None:
+    """Load KEY=VALUE pairs from a local .env (repo root) into os.environ if
+    not already set. Lets RateWalk pick up FRED_API_KEY the same way the other
+    repos do, without exporting it globally."""
     import os
+    env_path = Path(__file__).resolve().parents[3] / ".env"
+    if not env_path.exists():
+        return
+    for line in env_path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        v = v.strip().strip('"').strip("'")
+        if v:                       # skip empty placeholders (don't shadow real env)
+            os.environ.setdefault(k.strip(), v)
+
+
+def _fred_obs(series_id: str, key: str, start: str, end: str) -> pd.DataFrame:
+    """Fetch one FRED series as a [date, value] DataFrame. Missing values ('.')
+    are dropped. Raises on HTTP / key errors so callers can fall back."""
+    import json
+    import urllib.parse
+    import urllib.request
+    qs = urllib.parse.urlencode({
+        "series_id": series_id, "api_key": key, "file_type": "json",
+        "observation_start": start, "observation_end": end,
+    })
+    with urllib.request.urlopen(f"{_FRED_BASE}?{qs}", timeout=30) as resp:
+        payload = json.loads(resp.read().decode())
+    obs_rows = payload.get("observations", [])
+    if not obs_rows:
+        raise RuntimeError(f"FRED returned no observations for {series_id}")
+    df = pd.DataFrame(obs_rows)[["date", "value"]]
+    df["date"] = pd.to_datetime(df["date"])
+    df["value"] = pd.to_numeric(df["value"], errors="coerce")
+    return df.dropna(subset=["value"]).reset_index(drop=True)
+
+
+def _load_fred(country: str, start: str, end: str) -> MacroData:
+    """Live FRED pull. Raises if no key / no network / unmapped country so
+    callers can fall back to synthetic.
+
+    Point-in-time note: CPI is published with a lag and is revised. We attach a
+    realistic release lag to each CPI observation (so ``cpi_asof`` never uses a
+    month before it was public). Full ALFRED-vintage revisions are the
+    documented next step; the release-lag guard already prevents the dominant
+    look-ahead leak.
+    """
+    import os
+    _load_dotenv()
     key = os.getenv("FRED_API_KEY")
     if not key:
         raise RuntimeError("FRED_API_KEY not set")
     if country not in _FRED_SERIES:
         raise RuntimeError(f"no FRED series map for country={country}")
-    # NOTE: the real implementation issues HTTP calls to the FRED + ALFRED
-    # endpoints (the latter for point-in-time CPI vintages). Kept as an
-    # explicit failure here so the offline synthetic path is always exercised
-    # in tests; wire the HTTP client in deployment.
-    raise RuntimeError("FRED HTTP client not wired in this build; using synthetic")
+    smap = _FRED_SERIES[country]
+
+    # Policy rate (daily).
+    policy = _fred_obs(smap["policy"], key, start, end).rename(columns={"value": "rate"})
+
+    # CPI index -> YoY, with a publication-lag release date.
+    cpi_raw = _fred_obs(smap["cpi"], key, start, end).rename(columns={"value": "cpi"})
+    cpi_raw = cpi_raw.sort_values("date").reset_index(drop=True)
+    cpi_raw["cpi_yoy"] = (cpi_raw["cpi"] / cpi_raw["cpi"].shift(12) - 1.0) * 100.0
+    cpi_df = cpi_raw.dropna(subset=["cpi_yoy"]).copy()
+    # CPIAUCSL is dated the 1st of the month; the print lands ~mid the next
+    # month, so ~45 days after the observation date is a faithful release.
+    cpi_df["release_date"] = cpi_df["date"] + pd.Timedelta(days=45)
+    cpi_df = cpi_df[["date", "cpi_yoy", "release_date"]].reset_index(drop=True)
+
+    # Treasury curve: pull each tenor, merge on date. Missing series are
+    # skipped (non-US sovereigns may not have every tenor on FRED).
+    curve = None
+    for tenor, sid in smap.get("curve", {}).items():
+        try:
+            s = _fred_obs(sid, key, start, end).rename(columns={"value": tenor})
+        except Exception as exc:  # noqa: BLE001
+            obs.event(channel="data", kind="fred.curve_skip", level="WARNING",
+                      tenor=tenor, series=sid, err=str(exc))
+            continue
+        curve = s if curve is None else pd.merge(curve, s, on="date", how="outer")
+    if curve is None or curve.shape[1] < 2:
+        raise RuntimeError(f"no Treasury curve series available for {country}")
+    curve = curve.sort_values("date").ffill().dropna().reset_index(drop=True)
+
+    return MacroData(policy_rate=policy, cpi_yoy=cpi_df, curve=curve, source="fred")
 
 
 # ── Synthetic provider (deterministic, offline) ────────────────────────────
