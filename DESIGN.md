@@ -30,9 +30,14 @@ data -> states -> markov -> curve -> horizon select -> sim (+jumps) -> analytics
    than a multi-decade average. Sub-period and regime-conditional matrices are
    the documented alternatives.
 
-4. **CPI revisions are a look-ahead trap.** CPI is read on its **release date**
-   (publication lag honored), not its observation month, via `cpi_asof`. The
-   real FRED path uses ALFRED vintages. Enforced by the no-look-ahead test.
+4. **CPI revisions are a look-ahead trap.** Solved with **ALFRED vintages**:
+   `data/sources.py` fetches CPI with FRED `output_type=4` (initial release
+   only) over the full realtime window, so each value is the number as first
+   published, dated by its real release date (`realtime_start`). On live data
+   the initial-release YoY differs from the revised series in ~80% of months
+   (up to ~0.35pp), confirming the leak is real and now closed. Falls back to a
+   release-lag approximation if a vintage call fails. Enforced by the
+   no-look-ahead test.
 
 5. **Treasuries do not default in the normal course.** The `credit/` overlay is
    generic and sovereign-agnostic on purpose: set `annual_default_prob = 0` and

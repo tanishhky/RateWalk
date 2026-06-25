@@ -25,9 +25,21 @@ python3 -m venv .venv && ./.venv/bin/pip install -e ".[api,dev]"
 ./.venv/bin/python -m pytest -q                   # tests (incl. no-lookahead)
 ```
 
-With no `FRED_API_KEY`, RateWalk falls back to a deterministic **synthetic**
-data generator so the whole pipeline runs and tests offline. Set the key (and
-wire the FRED/ALFRED HTTP client in `data/sources.py`) to use real data.
+### Real data (FRED / ALFRED)
+
+Put a free [FRED API key](https://fredaccount.stlouisfed.org/apikeys) in `.env`:
+
+```bash
+cp .env.example .env        # then edit: FRED_API_KEY=your_key
+```
+
+With a key, `source: auto` pulls **real data**: the policy rate, the Treasury
+curve, and **true point-in-time CPI via ALFRED** (initial-release values dated
+by their real publication date, so revisions never leak). It is
+**multi-sovereign**: `country: US | GB | DE | JP | CA` (US has a full daily
+curve; others use the policy rate plus the 10Y yield as curve anchors, which is
+all FRED carries for them). With no key, it falls back to a deterministic
+**synthetic** generator so the pipeline and tests still run offline.
 
 ## What one run produces
 

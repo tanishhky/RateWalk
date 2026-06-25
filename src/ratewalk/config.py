@@ -18,6 +18,13 @@ _DEFAULT_PATH = Path(__file__).resolve().parents[2] / "config" / "default.yaml"
 
 
 @dataclass(frozen=True)
+class DataConfig:
+    source: str = "auto"                     # auto | fred | synthetic
+    start: str = "1990-01-01"
+    cpi_vintage: bool = True                 # ALFRED initial-release CPI (true point-in-time)
+
+
+@dataclass(frozen=True)
 class StateConfig:
     rate_mode: str = "increments"            # "levels" | "increments"
     increment_grid_bps: tuple = (-50, -25, 0, 25, 50, 75)
@@ -135,6 +142,7 @@ class HorizonConfig:
 @dataclass(frozen=True)
 class Config:
     country: str = "US"                      # multi-sovereign by design
+    data: DataConfig = field(default_factory=DataConfig)
     state: StateConfig = field(default_factory=StateConfig)
     markov: MarkovConfig = field(default_factory=MarkovConfig)
     curve: CurveConfig = field(default_factory=CurveConfig)
@@ -199,6 +207,7 @@ def load(path: Optional[Path] = None) -> Config:
 
     cfg = Config(
         country=raw.get("country", "US"),
+        data=_build(DataConfig, raw.get("data", {})),
         state=_build(StateConfig, raw.get("state", {})),
         markov=_build(MarkovConfig, raw.get("markov", {})),
         curve=_build(CurveConfig, raw.get("curve", {})),

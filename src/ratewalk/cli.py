@@ -35,7 +35,8 @@ from .vol import compare_policies
 
 
 def _build_context(cfg):
-    md = load_macro(country=cfg.country, source="auto", start="1990-01-01")
+    md = load_macro(country=cfg.country, source=cfg.data.source,
+                    start=cfg.data.start, cpi_vintage=cfg.data.cpi_vintage)
     rs, rspace = build_rate_states(md.policy_rate, mode=cfg.state.rate_mode,
                                    increment_grid_bps=cfg.state.increment_grid_bps,
                                    level_bin_width_bps=cfg.state.level_bin_width_bps)
@@ -94,6 +95,42 @@ def ctx_instrument(cfg, duration):
                                kind="single_bond")
 
 
+def _build_viz(res, ann_pct, P, rspace, gmm) -> dict:
+    """Compact, UI-ready visualization payloads: a fan chart of wealth and
+    rate paths, the full transition matrix, and a return histogram with a GMM
+    density overlay. Downsampled so the JSON stays small."""
+    spy = res.steps_per_year
+    n_steps = res.wealth_paths.shape[1]
+    # monthly steps -> sample ~40 points along the horizon for the fan chart
+    idx = np.unique(np.linspace(0, n_steps - 1, min(40, n_steps)).astype(int))
+    pcts = [5, 25, 50, 75, 95]
+    fan = {"t_years": (idx / spy).round(3).tolist(),
+           "wealth": {f"p{p}": np.percentile(res.wealth_paths[:, idx], p, axis=0).round(3).tolist()
+                      for p in pcts},
+           "rate": {f"p{p}": np.percentile(res.rate_paths[:, idx], p, axis=0).round(3).tolist()
+                    for p in pcts}}
+    # return histogram
+    counts, edges = np.histogram(ann_pct, bins=40)
+    centers = ((edges[:-1] + edges[1:]) / 2).round(3)
+    hist = {"centers": centers.tolist(), "counts": counts.tolist()}
+    # GMM density overlay (if a mixture was fit)
+    gmm_curve = None
+    if gmm and gmm.get("n_components"):
+        xs = np.linspace(float(ann_pct.min()), float(ann_pct.max()), 200)
+        dens = np.zeros_like(xs)
+        for w, m, s in zip(gmm["weights"], gmm["means"], gmm["stds"]):
+            # means/stds are on the fraction scale; ann_pct is in percent
+            mp, sp = m * 100.0, s * 100.0
+            dens += w * np.exp(-0.5 * ((xs - mp) / sp) ** 2) / (sp * np.sqrt(2 * np.pi))
+        gmm_curve = {"x": xs.round(3).tolist(), "density": dens.round(5).tolist()}
+    return {
+        "fan_chart": fan,
+        "transition_matrix": {"labels": rspace.labels, "P": np.round(P, 4).tolist()},
+        "return_histogram": hist,
+        "gmm_density": gmm_curve,
+    }
+
+
 def run_pipeline(cfg) -> dict:
     obs.event(channel="run", kind="pipeline.start", country=cfg.country,
               config_hash=cfg.content_hash())
@@ -143,6 +180,8 @@ def run_pipeline(cfg) -> dict:
                                   np.random.default_rng(cfg.sim.seed + 2))
     coupon_sens = single_coupon_sensitivity(res, coupon, horizon, which_coupon=1)
 
+    viz = _build_viz(res, ann_pct, ctx["rate_model"].P, rspace, gmm)
+
     report = {
         "config_hash": cfg.content_hash(),
         "country": cfg.country,
@@ -173,6 +212,7 @@ def run_pipeline(cfg) -> dict:
         "risk": {"VaR_CVaR": tail, "moments": moments, "gmm": gmm},
         "duration_grid": dgrid,
         "transition_sensitivity": sens,
+        "viz": viz,
         "credit": {
             "enabled": cfg.credit.enabled,
             "n_defaults": credit.n_defaults,

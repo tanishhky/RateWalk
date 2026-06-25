@@ -12,7 +12,7 @@ from ratewalk.markov.diagnostics import (stationary_distribution, log_likelihood
 
 
 def _model():
-    md = load_macro(country="US", start="1995-01-01")
+    md = load_macro(country="US", source="synthetic", start="1995-01-01")
     rs, rspace = build_rate_states(md.policy_rate, mode="increments")
     return rs, rspace, estimate_chain(rs, rspace, estimation="exp_weighted")
 

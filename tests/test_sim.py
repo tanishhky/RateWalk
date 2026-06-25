@@ -17,7 +17,7 @@ from ratewalk.sim import build_jump_models, run_simulation
 def _ctx(n_paths=1000):
     c = cfg.load()
     c = dataclasses.replace(c, sim=dataclasses.replace(c.sim, n_paths=n_paths))
-    md = load_macro(country="US", start="1995-01-01")
+    md = load_macro(country="US", source="synthetic", start="1995-01-01")
     rs, rspace = build_rate_states(md.policy_rate, mode=c.state.rate_mode,
                                    increment_grid_bps=c.state.increment_grid_bps)
     cm = fit_curve_model(md.curve, md.policy_rate)

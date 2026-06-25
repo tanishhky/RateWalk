@@ -66,13 +66,14 @@ def _parse(ts) -> pd.Timestamp:
 
 def load_macro(country: str = "US", source: str = "auto",
                start: str = "1990-01-01", end: Optional[str] = None,
-               seed: int = 7) -> MacroData:
+               seed: int = 7, cpi_vintage: bool = True) -> MacroData:
     """Load macro data for a country. ``source='auto'`` tries FRED then falls
-    back to synthetic so the pipeline always runs."""
+    back to synthetic so the pipeline always runs. ``cpi_vintage`` uses ALFRED
+    point-in-time CPI (initial release + real release date)."""
     end = end or datetime.now(timezone.utc).strftime("%Y-%m-%d")
     if source in ("fred", "auto"):
         try:
-            md = _load_fred(country, start, end)
+            md = _load_fred(country, start, end, cpi_vintage=cpi_vintage)
             obs.event(channel="data", kind="load.fred", country=country,
                       n_policy=len(md.policy_rate), n_cpi=len(md.cpi_yoy))
             return md
@@ -89,15 +90,23 @@ def load_macro(country: str = "US", source: str = "auto",
 
 # ── FRED / ALFRED provider ─────────────────────────────────────────────────
 
-# Per-country FRED series ids. Extend this map to add sovereigns.
+# Per-country FRED series ids (verified live). Extend this map to add
+# sovereigns. US has a full daily Treasury curve; FRED only carries a 10Y
+# long-term yield for most other sovereigns, so for them the curve is anchored
+# by the policy rate (short end) plus the 10Y (long end) and interpolated.
 _FRED_SERIES = {
     "US": {"policy": "DFF", "cpi": "CPIAUCSL",
            "curve": {"0.25": "DGS3MO", "1": "DGS1", "2": "DGS2", "3": "DGS3",
                      "5": "DGS5", "7": "DGS7", "10": "DGS10", "20": "DGS20",
                      "30": "DGS30"}},
-    # Placeholders for other sovereigns (series ids differ on FRED).
-    "GB": {"policy": "IUDSOIA", "cpi": "GBRCPIALLMINMEI", "curve": {}},
-    "DE": {"policy": "IRSTCB01DEM156N", "cpi": "DEUCPIALLMINMEI", "curve": {}},
+    "GB": {"policy": "IUDSOIA", "cpi": "GBRCPIALLMINMEI",
+           "curve": {"10": "IRLTLT01GBM156N"}},          # SONIA + 10Y gilt
+    "DE": {"policy": "ECBDFR", "cpi": "DEUCPIALLMINMEI",
+           "curve": {"10": "IRLTLT01DEM156N"}},          # ECB DFR + 10Y bund
+    "JP": {"policy": "IRSTCI01JPM156N", "cpi": "JPNCPIALLMINMEI",
+           "curve": {"10": "IRLTLT01JPM156N"}},          # call rate + 10Y JGB
+    "CA": {"policy": "IRSTCB01CAM156N", "cpi": "CANCPIALLMINMEI",
+           "curve": {"10": "IRLTLT01CAM156N"}},          # policy + 10Y GoC
 }
 
 
@@ -143,7 +152,39 @@ def _fred_obs(series_id: str, key: str, start: str, end: str) -> pd.DataFrame:
     return df.dropna(subset=["value"]).reset_index(drop=True)
 
 
-def _load_fred(country: str, start: str, end: str) -> MacroData:
+def _fred_obs_vintage(series_id: str, key: str, start: str, end: str) -> pd.DataFrame:
+    """ALFRED point-in-time fetch: each observation's INITIAL release value and
+    its real first-publication date.
+
+    Uses output_type=4 (initial release only) over the full realtime window, so
+    `realtime_start` is the date the value was first published. This is the
+    rigorous no-look-ahead CPI: it uses the number as it was known then, before
+    any revision, dated by its actual release. Raises on failure so the caller
+    can fall back to the revised series with an approximate release lag.
+    """
+    import json
+    import urllib.parse
+    import urllib.request
+    qs = urllib.parse.urlencode({
+        "series_id": series_id, "api_key": key, "file_type": "json",
+        "output_type": 4, "realtime_start": "1776-07-04", "realtime_end": "9999-12-31",
+        "observation_start": start, "observation_end": end,
+    })
+    with urllib.request.urlopen(f"{_FRED_BASE}?{qs}", timeout=40) as resp:
+        payload = json.loads(resp.read().decode())
+    rows = payload.get("observations", [])
+    if not rows:
+        raise RuntimeError(f"ALFRED returned no vintage observations for {series_id}")
+    df = pd.DataFrame(rows)[["date", "value", "realtime_start"]]
+    df["date"] = pd.to_datetime(df["date"])
+    df["release_date"] = pd.to_datetime(df["realtime_start"])
+    df["value"] = pd.to_numeric(df["value"], errors="coerce")
+    df = df.dropna(subset=["value"]).drop(columns=["realtime_start"])
+    # Keep the earliest (initial) release per observation date.
+    return df.sort_values("release_date").drop_duplicates("date", keep="first").reset_index(drop=True)
+
+
+def _load_fred(country: str, start: str, end: str, cpi_vintage: bool = True) -> MacroData:
     """Live FRED pull. Raises if no key / no network / unmapped country so
     callers can fall back to synthetic.
 
@@ -165,17 +206,30 @@ def _load_fred(country: str, start: str, end: str) -> MacroData:
     # Policy rate (daily).
     policy = _fred_obs(smap["policy"], key, start, end).rename(columns={"value": "rate"})
 
-    # CPI index -> YoY, with a publication-lag release date.
-    cpi_raw = _fred_obs(smap["cpi"], key, start, end).rename(columns={"value": "cpi"})
-    cpi_raw = cpi_raw.sort_values("date").reset_index(drop=True)
-    cpi_raw["cpi_yoy"] = (cpi_raw["cpi"] / cpi_raw["cpi"].shift(12) - 1.0) * 100.0
-    cpi_df = cpi_raw.dropna(subset=["cpi_yoy"]).copy()
-    # CPIAUCSL is dated the 1st of the month; the print lands ~mid the next
-    # month, so ~45 days after the observation date is a faithful release.
-    cpi_df["release_date"] = cpi_df["date"] + pd.Timedelta(days=45)
-    cpi_df = cpi_df[["date", "cpi_yoy", "release_date"]].reset_index(drop=True)
+    # CPI index -> YoY. Prefer true ALFRED vintages (initial-release values +
+    # real release dates); fall back to the revised series with an approximate
+    # publication lag if the vintage call fails.
+    cpi_mode = "lag_approx"
+    if cpi_vintage:
+        try:
+            cpi_raw = _fred_obs_vintage(smap["cpi"], key, start, end).rename(columns={"value": "cpi"})
+            cpi_raw = cpi_raw.sort_values("date").reset_index(drop=True)
+            cpi_raw["cpi_yoy"] = (cpi_raw["cpi"] / cpi_raw["cpi"].shift(12) - 1.0) * 100.0
+            cpi_df = cpi_raw.dropna(subset=["cpi_yoy"])[["date", "cpi_yoy", "release_date"]].reset_index(drop=True)
+            cpi_mode = "alfred_vintage"
+        except Exception as exc:  # noqa: BLE001
+            obs.event(channel="data", kind="fred.vintage_fallback", level="WARNING", err=str(exc))
+            cpi_vintage = False
+    if not cpi_vintage:
+        cpi_raw = _fred_obs(smap["cpi"], key, start, end).rename(columns={"value": "cpi"})
+        cpi_raw = cpi_raw.sort_values("date").reset_index(drop=True)
+        cpi_raw["cpi_yoy"] = (cpi_raw["cpi"] / cpi_raw["cpi"].shift(12) - 1.0) * 100.0
+        cpi_df = cpi_raw.dropna(subset=["cpi_yoy"]).copy()
+        cpi_df["release_date"] = cpi_df["date"] + pd.Timedelta(days=45)
+        cpi_df = cpi_df[["date", "cpi_yoy", "release_date"]].reset_index(drop=True)
+    obs.event(channel="data", kind="fred.cpi", mode=cpi_mode, n=len(cpi_df))
 
-    # Treasury curve: pull each tenor, merge on date. Missing series are
+    # Yield curve: pull each available tenor, merge on date. Missing series are
     # skipped (non-US sovereigns may not have every tenor on FRED).
     curve = None
     for tenor, sid in smap.get("curve", {}).items():
@@ -186,9 +240,21 @@ def _load_fred(country: str, start: str, end: str) -> MacroData:
                       tenor=tenor, series=sid, err=str(exc))
             continue
         curve = s if curve is None else pd.merge(curve, s, on="date", how="outer")
-    if curve is None or curve.shape[1] < 2:
-        raise RuntimeError(f"no Treasury curve series available for {country}")
+
+    # Ensure a short-end anchor: if the curve has no sub-1y tenor (true for
+    # non-US, where FRED only carries a 10Y yield), use the policy rate as the
+    # short anchor so the curve mapping has at least two points to interpolate.
+    have_short = curve is not None and any(float(c) <= 0.5 for c in curve.columns if c != "date")
+    if not have_short:
+        short = policy.rename(columns={"rate": "0.25"})
+        curve = short if curve is None else pd.merge(short, curve, on="date", how="outer")
+
+    if curve is None or curve.shape[1] < 3:
+        raise RuntimeError(f"insufficient curve data for {country} "
+                           f"(need >=2 tenors; FRED non-US coverage is sparse)")
     curve = curve.sort_values("date").ffill().dropna().reset_index(drop=True)
+    obs.event(channel="data", kind="fred.curve",
+              tenors=[c for c in curve.columns if c != "date"], n=len(curve))
 
     return MacroData(policy_rate=policy, cpi_yoy=cpi_df, curve=curve, source="fred")
 

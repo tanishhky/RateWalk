@@ -2,7 +2,12 @@
 # Everything in the model path is tweakable here. See src/ratewalk/config.py
 # for the full schema and per-field documentation.
 
-country: US                       # multi-sovereign by design (US, GB, DE, JP, ...)
+country: US                       # multi-sovereign by design (US, GB, DE, JP, CA)
+
+data:
+  source: auto                    # auto (FRED then synthetic) | fred | synthetic
+  start: "1990-01-01"
+  cpi_vintage: true               # ALFRED initial-release CPI (true point-in-time)
 
 state:
   rate_mode: increments           # levels | increments (increments is more stationary)

@@ -25,7 +25,7 @@ def _joint_asof(md, as_of):
 
 
 def test_pit_filter_excludes_future():
-    md = load_macro(country="US", start="1995-01-01")
+    md = load_macro(country="US", source="synthetic", start="1995-01-01")
     asof = "2012-01-01"
     pol = md.policy_asof(asof)
     cpi = md.cpi_asof(asof)
@@ -35,8 +35,8 @@ def test_pit_filter_excludes_future():
 
 
 def test_estimation_invariant_to_future_data():
-    md_now = load_macro(country="US", start="1995-01-01", end="2012-01-01")
-    md_future = load_macro(country="US", start="1995-01-01", end="2024-01-01")
+    md_now = load_macro(country="US", source="synthetic", start="1995-01-01", end="2012-01-01")
+    md_future = load_macro(country="US", source="synthetic", start="1995-01-01", end="2024-01-01")
 
     asof = "2012-01-01"
     j1, rsp1, _ = _joint_asof(md_now, asof)
