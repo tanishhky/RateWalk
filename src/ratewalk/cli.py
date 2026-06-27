@@ -242,24 +242,71 @@ def run_pipeline(cfg) -> dict:
     return report
 
 
+def run_walkforward(cfg, *, min_train: int = 120) -> dict:
+    """Walk-forward validation: out-of-sample FOMC-decision forecasting (with a
+    live nowcast) and a duration-timing backtest vs benchmarks. Everything is
+    no-look-ahead: every prediction at month t uses only data public before t."""
+    import numpy as np
+    from .walkforward import (prepare_series, compare_models, nowcast, duration_backtest)
+    obs.event(channel="run", kind="walkforward.start", country=cfg.country)
+    md = load_macro(country=cfg.country, source=cfg.data.source,
+                    start=cfg.data.start, cpi_vintage=cfg.data.cpi_vintage)
+    s = prepare_series(md, cfg)
+    rng = np.random.default_rng(cfg.sim.seed)
+    forecast_eval = compare_models(s, min_train=min_train, n_dirichlet=200, rng=rng)
+    live = nowcast(s, model="conditional", rng=rng)
+    backtest = duration_backtest(s, md.curve, min_train=min_train)
+    return {
+        "config_hash": cfg.content_hash(),
+        "country": cfg.country,
+        "data_source": md.source,
+        "min_train_months": min_train,
+        "forecast_validation": forecast_eval,
+        "nowcast": live,
+        "duration_backtest": backtest,
+    }
+
+
 def main(argv: Optional[list] = None) -> int:
     ap = argparse.ArgumentParser(prog="ratewalk")
     sub = ap.add_subparsers(dest="cmd")
     pr = sub.add_parser("run", help="run the full pipeline")
     pr.add_argument("--config", type=str, default=None)
     pr.add_argument("--out", type=str, default="runs")
+    wf = sub.add_parser("walkforward", help="out-of-sample forecast + backtest")
+    wf.add_argument("--config", type=str, default=None)
+    wf.add_argument("--out", type=str, default="runs")
+    wf.add_argument("--min-train", type=int, default=120)
     args = ap.parse_args(argv)
 
-    if args.cmd != "run":
+    if args.cmd not in ("run", "walkforward"):
         ap.print_help()
         return 1
 
     cfg = cfgmod.load(Path(args.config) if args.config else None)
     out_dir = Path(args.out)
-    obs.configure(log_dir=out_dir / "logs")
-    report = run_pipeline(cfg)
-
     out_dir.mkdir(parents=True, exist_ok=True)
+    obs.configure(log_dir=out_dir / "logs")
+
+    if args.cmd == "walkforward":
+        report = run_walkforward(cfg, min_train=args.min_train)
+        out_path = out_dir / f"walkforward-{cfg.country}-{cfg.content_hash()}.json"
+        with open(out_path, "w") as fh:
+            json.dump(report, fh, indent=2, default=str)
+        print(f"wrote {out_path}")
+        sm = report["forecast_validation"]["summary"]
+        print(f"  forecast ({sm['eval_points']} OOS months): "
+              f"chain beats climatology={sm['chain_beats_climatology']}, "
+              f"CPI conditioning helps={sm['cpi_conditioning_helps']}")
+        bt = report["duration_backtest"]
+        print(f"  duration backtest: strategy Sharpe={bt['strategy']['sharpe']} vs "
+              + ", ".join(f"{k} {v['sharpe']}" for k, v in bt['benchmarks'].items()))
+        nc = report["nowcast"]
+        print(f"  nowcast {nc['as_of']}: E[next move]={nc['expected_move_bps']}bps, "
+              f"P(hold)={[d['prob'] for d in nc['distribution'] if d['move']=='+0bps'][0]}")
+        return 0
+
+    report = run_pipeline(cfg)
     out_path = out_dir / f"report-{cfg.content_hash()}.json"
     with open(out_path, "w") as fh:
         json.dump(report, fh, indent=2, default=str)

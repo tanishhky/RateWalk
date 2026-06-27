@@ -21,9 +21,29 @@ scales from a **single bond to a ladder or portfolio**, and the investment
 ```bash
 python3 -m venv .venv && ./.venv/bin/pip install -e ".[api,dev]"
 ./.venv/bin/python -m ratewalk.cli run            # full pipeline -> runs/report-<hash>.json
+./.venv/bin/python -m ratewalk.cli walkforward    # out-of-sample forecast + backtest
 ./.venv/bin/python -m ratewalk.api.server         # web UI at http://127.0.0.1:8780
 ./.venv/bin/python -m pytest -q                   # tests (incl. no-lookahead)
 ```
+
+## Walk-forward validation (the honest part)
+
+`ratewalk walkforward` answers two questions on out-of-sample data, with no
+look-ahead (every prediction at month t uses only data public before t):
+
+1. **What is the likelihood of the Fed's next move, with a confidence interval?**
+   A live nowcast gives `P(-50/-25/0/+25/+50/+75 bps)` with a Dirichlet band,
+   e.g. `P(hold) = 60% [49%, 70%]`.
+2. **Were we right historically?** Each month's prediction is scored against the
+   realized move and compared to a climatology baseline and an unconditional
+   chain (accuracy, log-loss, Brier, calibration), plus a duration-timing
+   backtest vs constant-duration benchmarks.
+
+What it found on US data (1990-2026): the first-order chain beats climatology
+on log-loss, but **conditioning on CPI does not help out of sample** (it
+fragments sparse data), and the duration-timing strategy **does not beat a
+constant-2y bond risk-adjusted**. Those are real, useful negatives, not a
+manufactured edge. See DESIGN.md for what would move the needle.
 
 ### Real data (FRED / ALFRED)
 
