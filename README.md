@@ -119,5 +119,14 @@ src/ratewalk/
   api/                         FastAPI + minimal web UI
 ```
 
+## Writeups
+
+- [`notebooks/RateWalk-research.ipynb`](./notebooks/RateWalk-research.ipynb) - an
+  executable research notebook that walks the whole story end to end (idea ->
+  surprise -> diagnosis -> shrinkage fix -> robustness -> honest negatives), with
+  outputs and figures generated from live FRED data.
+- [`paper/ratewalk.pdf`](./paper/ratewalk.pdf) - a short working paper of the
+  same study.
+
 See [DESIGN.md](./DESIGN.md) for the methodology, the modeling decisions, and
 the planned extensions. This is research software, not investment advice.
