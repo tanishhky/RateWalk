@@ -64,6 +64,34 @@ def test_compare_models_and_scoring():
     assert "shrunk_cpi_conditioning_helps" in out["summary"]
 
 
+def test_eb_tau_is_estimated_and_positive():
+    """The data-driven shrinkage model runs, scores, and records a tau schedule
+    of sensible positive values."""
+    from ratewalk.walkforward.forecast import walk_forward_forecast, score_forecasts
+    s, _ = _series("2015-01-01")
+    df = walk_forward_forecast(s, model="conditional_eb", min_train=60,
+                               n_dirichlet=1, rng=np.random.default_rng(0))
+    sc = score_forecasts(df, s.rate_space.n)
+    assert sc["n"] > 0 and sc["mean_log_loss"] > 0
+    taus = df.attrs.get("eb_taus", [])
+    assert len(taus) > 0
+    assert all(t > 0 for _, t in taus)
+
+
+def test_meeting_cadence_changes_decision_count():
+    """Meeting cadence (~8/yr) yields fewer decisions than monthly (12/yr) over
+    the same span, and still produces a valid forecast."""
+    from ratewalk.walkforward.forecast import prepare_series, walk_forward_forecast
+    c = cfg.load()
+    md = load_macro(country="US", source="synthetic", start="1990-01-01", end="2020-01-01")
+    s_m = prepare_series(md, c, decision_freq="monthly")
+    s_k = prepare_series(md, c, decision_freq="meeting")
+    assert len(s_k.state) < len(s_m.state)          # ~8/yr < 12/yr
+    df = walk_forward_forecast(s_k, model="conditional_shrunk", min_train=60,
+                               n_dirichlet=1, rng=np.random.default_rng(0))
+    assert len(df) > 0
+
+
 def test_shrinkage_interpolates_conditional_to_unconditional():
     """Large shrink_tau must drive the shrunk conditional model to the
     unconditional chain (the pooled prior dominates)."""

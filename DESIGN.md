@@ -9,6 +9,45 @@ data -> states -> markov -> curve -> horizon select -> sim (+jumps) -> analytics
                                                          |-> vol allocation (optional)
 ```
 
+## The walk-forward finding (and how robust it is)
+
+`ratewalk walkforward` predicts each historical rate decision out of sample
+(no look-ahead) and scores it. The result is a clean bias-variance story:
+
+| model | US | GB | DE | what it is |
+|---|---|---|---|---|
+| climatology | 1.162 | 1.010 | 0.615 | unconditional marginal |
+| unconditional chain | 1.071 | 0.843 | 0.596 | P(next \| current move) |
+| CPI-conditional (raw) | 1.136 | 0.904 | 0.662 | overfits sparse regimes |
+| CPI-conditional (shrunk, tau=50) | **1.059** | **0.819** | **0.549** | best |
+| CPI-conditional (empirical-Bayes tau) | 1.065 | 0.843 | 0.563 | tau learned from data |
+
+(out-of-sample mean log-loss, lower is better)
+
+Robustness checks done, all reported honestly:
+- **Replication.** The flip (raw conditioning hurts, shrunk helps) holds in all
+  three sovereigns.
+- **Not a tuned tau.** A tau-sweep shows a broad plateau (tau ~20-500 all beat
+  the unconditional chain), and a fully data-driven empirical-Bayes tau (Polya
+  / Dirichlet-multinomial concentration, estimated per-step from past-only data)
+  also beats the unconditional chain with no tuning. EB is slightly worse than a
+  fixed moderate tau because it is conservative (high tau) when early data is
+  thin, then adapts down (US ~130, GB ~300, DE ~17 by 2026 - Germany's decisions
+  are the most CPI-regime-dependent).
+- **Cadence is not the lever.** Re-running at ~FOMC cadence (8/yr) instead of
+  monthly does NOT systematically sharpen the signal (it helps GB, is neutral
+  for US, hurts DE). The reason: even at meeting frequency ~60-80% of decisions
+  are holds, because policy rates are intrinsically sticky - the hold-dominance
+  is not a sampling artifact. Caveat: this used an approximate 8/yr cadence, not
+  the exact published FOMC calendar; aligning to real meeting dates is the
+  remaining data refinement.
+
+The honest bottom line: a memoryless first-order chain on rate moves beats
+climatology; raw macro conditioning overfits; shrinkage recovers a small but
+consistent CPI edge; and the edge is in probabilistic calibration, not yet in a
+tradeable duration strategy (the backtest does not beat a constant-2y bond
+risk-adjusted).
+
 ## Modeling decisions (and how each is handled)
 
 1. **Policy rate is not the curve.** A bond is priced off the whole curve, so

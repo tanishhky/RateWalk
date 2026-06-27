@@ -252,7 +252,7 @@ def run_walkforward(cfg, *, min_train: int = 120) -> dict:
     obs.event(channel="run", kind="walkforward.start", country=cfg.country)
     md = load_macro(country=cfg.country, source=cfg.data.source,
                     start=cfg.data.start, cpi_vintage=cfg.data.cpi_vintage)
-    s = prepare_series(md, cfg)
+    s = prepare_series(md, cfg, decision_freq=cfg.state.decision_freq)
     rng = np.random.default_rng(cfg.sim.seed)
     # tau fixed a priori at 50 (mild "~50 pseudo-observations" shrinkage), NOT
     # tuned on the test set. The sweep below shows the result is a broad plateau,
@@ -303,11 +303,12 @@ def main(argv: Optional[list] = None) -> int:
             json.dump(report, fh, indent=2, default=str)
         print(f"wrote {out_path}")
         sm = report["forecast_validation"]["summary"]
-        print(f"  forecast ({sm['eval_points']} OOS months) log-loss: "
-              f"climatology {sm['logloss_climatology']} | uncond {sm['logloss_unconditional']} | "
-              f"cond-raw {sm['logloss_conditional_raw']} | cond-shrunk {sm['logloss_conditional_shrunk']}")
+        print(f"  forecast ({sm['eval_points']} OOS decisions, {cfg.state.decision_freq}) log-loss:")
+        print(f"    climatology {sm['logloss_climatology']} | uncond {sm['logloss_unconditional']} | "
+              f"cond-raw {sm['logloss_conditional_raw']} | shrunk(50) {sm['logloss_conditional_shrunk']} | "
+              f"EB-tau {sm['logloss_conditional_eb']}")
         print(f"    raw CPI helps={sm['raw_cpi_conditioning_helps']}, "
-              f"SHRUNK CPI helps={sm['shrunk_cpi_conditioning_helps']}")
+              f"shrunk helps={sm['shrunk_cpi_conditioning_helps']}, EB helps={sm['eb_cpi_conditioning_helps']}")
         bt = report["duration_backtest"]
         print(f"  duration backtest: strategy Sharpe={bt['strategy']['sharpe']} vs "
               + ", ".join(f"{k} {v['sharpe']}" for k, v in bt['benchmarks'].items()))

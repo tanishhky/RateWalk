@@ -31,6 +31,7 @@ class StateConfig:
     level_bin_width_bps: float = 25.0
     cpi_bins_yoy: tuple = (0.0, 2.0, 3.0, 5.0)   # edges -> len+1 regimes
     alignment: str = "decoupled"             # event_time | calendar_time | decoupled
+    decision_freq: str = "monthly"           # monthly | meeting (~8/yr cadence)
 
 
 @dataclass(frozen=True)

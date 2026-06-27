@@ -57,9 +57,19 @@ class WFSeries:
     incr_bps: np.ndarray           # bps value per state index
 
 
-def prepare_series(md, cfg) -> WFSeries:
+# Decision-cadence resample frequencies. 'monthly' is 12/yr (the default, but
+# inflates the hold class with no-meeting months). 'meeting' is a ~46-day grid,
+# ~8/yr, matching the FOMC's eight scheduled meetings (an approximation of the
+# cadence, not the exact published calendar, which would be a data-ingestion
+# refinement). The net rate change in each bucket is snapped to the move grid.
+_DECISION_FREQ = {"monthly": "ME", "meeting": "46D"}
+
+
+def prepare_series(md, cfg, *, decision_freq: str = "monthly") -> WFSeries:
+    resample = _DECISION_FREQ.get(decision_freq, decision_freq)
     rs, rate_space = build_rate_states(md.policy_rate, mode="increments",
-                                       increment_grid_bps=cfg.state.increment_grid_bps)
+                                       increment_grid_bps=cfg.state.increment_grid_bps,
+                                       resample=resample)
     cs, cpi_space = build_cpi_states(md.cpi_yoy, bins_yoy=cfg.state.cpi_bins_yoy)
     joint = build_joint_series(rs, cs, alignment=cfg.state.alignment)
     rmap = {lab: i for i, lab in enumerate(rate_space.labels)}
@@ -81,22 +91,74 @@ def _row_counts(from_arr, to_arr, reg_arr, *, q_from, q_reg, n_states) -> np.nda
     return np.bincount(to_arr[mask], minlength=n_states).astype(float)
 
 
+def estimate_eb_tau(from_arr, to_arr, reg_arr, n_states, n_regimes, *,
+                    bounds=(1.0, 3000.0)) -> float:
+    """Data-driven shrinkage strength by empirical Bayes (type-II MLE).
+
+    The hierarchical model: each (from-state, CPI-regime) transition row is
+    Multinomial with a Dirichlet(tau * pooled_prob) prior, where pooled_prob is
+    the unconditional row for that from-state. Marginalizing the Multinomial
+    gives a Dirichlet-multinomial whose only free parameter is the
+    concentration tau. We pick tau to maximize the marginal likelihood of the
+    observed regime rows (a Polya / Dirichlet-multinomial concentration
+    estimate). Large tau means the regimes look like the pooled chain (little
+    extra signal); small tau means the regimes genuinely differ.
+
+    Pass ONLY past transitions so the estimate stays no-look-ahead.
+    """
+    from scipy.special import gammaln
+    from scipy.optimize import minimize_scalar
+
+    rows = []  # (counts_vec, pooled_prob_vec)
+    for i in np.unique(from_arr):
+        mi = from_arr == i
+        pooled = np.bincount(to_arr[mi], minlength=n_states).astype(float)
+        if pooled.sum() == 0:
+            continue
+        pooled_prob = (pooled + 1e-6) / (pooled + 1e-6).sum()
+        for r in range(n_regimes):
+            c = np.bincount(to_arr[mi & (reg_arr == r)], minlength=n_states).astype(float)
+            if c.sum() > 0:
+                rows.append((c, pooled_prob))
+    if not rows:
+        return bounds[0]
+
+    def neg_ll(log_tau):
+        tau = float(np.exp(log_tau))
+        ll = 0.0
+        for c, p in rows:
+            n = c.sum()
+            a = tau * p
+            ll += gammaln(tau) - gammaln(tau + n) + np.sum(gammaln(c + a) - gammaln(a))
+        return -ll
+
+    res = minimize_scalar(neg_ll, bounds=(np.log(bounds[0]), np.log(bounds[1])),
+                          method="bounded")
+    return float(np.clip(np.exp(res.x), bounds[0], bounds[1]))
+
+
 def walk_forward_forecast(s: WFSeries, *, model: str = "conditional",
                           min_train: int = 120, prior: float = 1.0,
                           n_dirichlet: int = 300, ci: float = 0.90,
-                          shrink_tau: float = 20.0,
+                          shrink_tau: float = 20.0, eb_refit_every: int = 12,
                           rng: Optional[np.random.Generator] = None) -> pd.DataFrame:
     """Return one row per evaluated month with the predicted distribution, its
-    confidence band, and the realized outcome. ``shrink_tau`` is the
-    empirical-Bayes shrinkage strength for model='conditional_shrunk'."""
+    confidence band, and the realized outcome.
+
+    ``shrink_tau`` is the fixed shrinkage strength for 'conditional_shrunk'.
+    'conditional_eb' instead estimates tau by empirical Bayes from past-only
+    data, re-fitting every ``eb_refit_every`` steps (kept no-look-ahead)."""
     rng = rng or np.random.default_rng(0)
     n = len(s.state)
     n_states = s.rate_space.n
+    n_regimes = s.cpi_space.n
     # transition arrays: transition k is state[k] -> state[k+1] under regime[k]
     from_arr = s.state[:-1]
     to_arr = s.state[1:]
     reg_arr = s.regime[:-1]
     lo_q, hi_q = (1 - ci) / 2 * 100, (1 + ci) / 2 * 100
+    cur_tau = shrink_tau
+    eb_taus = []
 
     rows = []
     for i in range(min_train, n):
@@ -129,6 +191,20 @@ def walk_forward_forecast(s: WFSeries, *, model: str = "conditional",
             pooled_prob = (pooled + prior) / (pooled + prior).sum()
             alpha = reg_counts + shrink_tau * pooled_prob
             counts = reg_counts
+        elif model == "conditional_eb":
+            # Same shrinkage, but tau is estimated from past-only data by
+            # empirical Bayes, refit periodically (no look-ahead).
+            if (i - min_train) % eb_refit_every == 0:
+                cur_tau = estimate_eb_tau(from_arr[:end], to_arr[:end], reg_arr[:end],
+                                          n_states, n_regimes)
+                eb_taus.append((str(s.dates[i]), round(cur_tau, 1)))
+            reg_counts = _row_counts(from_arr[:end], to_arr[:end], reg_arr[:end],
+                                     q_from=q_from, q_reg=s.regime[i - 1], n_states=n_states)
+            pooled = _row_counts(from_arr[:end], to_arr[:end], reg_arr[:end],
+                                 q_from=q_from, q_reg=None, n_states=n_states)
+            pooled_prob = (pooled + prior) / (pooled + prior).sum()
+            alpha = reg_counts + cur_tau * pooled_prob
+            counts = reg_counts
         else:
             raise ValueError(f"unknown model {model!r}")
         if alpha.sum() <= 0:        # degenerate (e.g. tau=0 with an empty row)
@@ -143,6 +219,8 @@ def walk_forward_forecast(s: WFSeries, *, model: str = "conditional",
             "n_support": int(counts.sum()), "probs": probs, "lo": lo, "hi": hi,
         })
     df = pd.DataFrame(rows)
+    if eb_taus:
+        df.attrs["eb_taus"] = eb_taus
     obs.event(channel="walkforward", kind="forecast", model=model,
               n_eval=len(df), min_train=min_train)
     return df
@@ -214,19 +292,27 @@ def compare_models(s: WFSeries, *, min_train: int = 120, n_dirichlet: int = 200,
     out["conditional_shrunk"] = score_forecasts(df_sh, s.rate_space.n)
     out["conditional_shrunk"]["shrink_tau"] = shrink_tau
 
+    df_eb = walk_forward_forecast(s, model="conditional_eb", min_train=min_train,
+                                  n_dirichlet=n_dirichlet, rng=rng)
+    out["conditional_eb"] = score_forecasts(df_eb, s.rate_space.n)
+    out["conditional_eb"]["eb_taus"] = df_eb.attrs.get("eb_taus", [])
+
     cu = out["unconditional"]["mean_log_loss"]
     cc = out["conditional"]["mean_log_loss"]
     cs = out["conditional_shrunk"]["mean_log_loss"]
+    ce = out["conditional_eb"]["mean_log_loss"]
     cl = out["climatology"]["mean_log_loss"]
     out["summary"] = {
         "eval_points": out["conditional"]["n"],
         "chain_beats_climatology": bool(cu < cl),
         "raw_cpi_conditioning_helps": bool(cc < cu),
         "shrunk_cpi_conditioning_helps": bool(cs < cu),
+        "eb_cpi_conditioning_helps": bool(ce < cu),
         "shrinkage_beats_raw_conditional": bool(cs < cc),
         "logloss_climatology": cl, "logloss_unconditional": cu,
         "logloss_conditional_raw": cc, "logloss_conditional_shrunk": cs,
-        "shrink_tau": shrink_tau,
+        "logloss_conditional_eb": ce,
+        "shrink_tau_fixed": shrink_tau,
     }
     return out
 
