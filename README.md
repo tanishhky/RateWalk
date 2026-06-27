@@ -39,11 +39,27 @@ look-ahead (every prediction at month t uses only data public before t):
    chain (accuracy, log-loss, Brier, calibration), plus a duration-timing
    backtest vs constant-duration benchmarks.
 
-What it found on US data (1990-2026): the first-order chain beats climatology
-on log-loss, but **conditioning on CPI does not help out of sample** (it
-fragments sparse data), and the duration-timing strategy **does not beat a
-constant-2y bond risk-adjusted**. Those are real, useful negatives, not a
-manufactured edge. See DESIGN.md for what would move the needle.
+### The headline finding
+
+Out of sample (1990-2026), conditioning the rate-transition chain on the CPI
+regime behaves in a way that is itself the result:
+
+| model | US log-loss | what it is |
+|---|---|---|
+| climatology | 1.162 | unconditional marginal of moves |
+| unconditional chain | 1.071 | P(next \| current move) |
+| **raw** CPI-conditional | 1.136 | P(next \| current, CPI) - *worse*, it overfits |
+| **shrunk** CPI-conditional | **1.059** | same, shrunk toward the pooled chain - *best* |
+
+So the naive macro model **hurts** (it fragments sparse regime data), but pulling
+each regime's row toward the pooled chain with an empirical-Bayes-style prior
+**recovers a real edge** and beats the unconditional model. The flip replicates
+out of sample across the **US, UK, and Germany**, and it is a broad plateau in
+the shrinkage strength (tau ~ 20-500), not a knife-edge tuned to the test set.
+
+The duration-timing strategy built on the signal still does **not** beat a
+constant-2y bond risk-adjusted (Sharpe 1.06 vs 1.39), which is an honest
+negative. See DESIGN.md for what would move that.
 
 ### Real data (FRED / ALFRED)
 

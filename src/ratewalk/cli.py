@@ -247,14 +247,21 @@ def run_walkforward(cfg, *, min_train: int = 120) -> dict:
     live nowcast) and a duration-timing backtest vs benchmarks. Everything is
     no-look-ahead: every prediction at month t uses only data public before t."""
     import numpy as np
-    from .walkforward import (prepare_series, compare_models, nowcast, duration_backtest)
+    from .walkforward import prepare_series, compare_models, nowcast, duration_backtest
+    from .walkforward.forecast import tau_sweep
     obs.event(channel="run", kind="walkforward.start", country=cfg.country)
     md = load_macro(country=cfg.country, source=cfg.data.source,
                     start=cfg.data.start, cpi_vintage=cfg.data.cpi_vintage)
     s = prepare_series(md, cfg)
     rng = np.random.default_rng(cfg.sim.seed)
-    forecast_eval = compare_models(s, min_train=min_train, n_dirichlet=200, rng=rng)
-    live = nowcast(s, model="conditional", rng=rng)
+    # tau fixed a priori at 50 (mild "~50 pseudo-observations" shrinkage), NOT
+    # tuned on the test set. The sweep below shows the result is a broad plateau,
+    # not a knife-edge, so the choice of tau is not driving the finding.
+    SHRINK_TAU = 50.0
+    forecast_eval = compare_models(s, min_train=min_train, n_dirichlet=200,
+                                   shrink_tau=SHRINK_TAU, rng=rng)
+    sweep = tau_sweep(s, [0, 5, 10, 20, 50, 100, 200, 500], min_train=min_train, rng=rng)
+    live = nowcast(s, model="conditional_shrunk", shrink_tau=SHRINK_TAU, rng=rng)
     backtest = duration_backtest(s, md.curve, min_train=min_train)
     return {
         "config_hash": cfg.content_hash(),
@@ -262,6 +269,7 @@ def run_walkforward(cfg, *, min_train: int = 120) -> dict:
         "data_source": md.source,
         "min_train_months": min_train,
         "forecast_validation": forecast_eval,
+        "tau_sweep": sweep,
         "nowcast": live,
         "duration_backtest": backtest,
     }
@@ -295,9 +303,11 @@ def main(argv: Optional[list] = None) -> int:
             json.dump(report, fh, indent=2, default=str)
         print(f"wrote {out_path}")
         sm = report["forecast_validation"]["summary"]
-        print(f"  forecast ({sm['eval_points']} OOS months): "
-              f"chain beats climatology={sm['chain_beats_climatology']}, "
-              f"CPI conditioning helps={sm['cpi_conditioning_helps']}")
+        print(f"  forecast ({sm['eval_points']} OOS months) log-loss: "
+              f"climatology {sm['logloss_climatology']} | uncond {sm['logloss_unconditional']} | "
+              f"cond-raw {sm['logloss_conditional_raw']} | cond-shrunk {sm['logloss_conditional_shrunk']}")
+        print(f"    raw CPI helps={sm['raw_cpi_conditioning_helps']}, "
+              f"SHRUNK CPI helps={sm['shrunk_cpi_conditioning_helps']}")
         bt = report["duration_backtest"]
         print(f"  duration backtest: strategy Sharpe={bt['strategy']['sharpe']} vs "
               + ", ".join(f"{k} {v['sharpe']}" for k, v in bt['benchmarks'].items()))

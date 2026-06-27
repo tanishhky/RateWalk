@@ -84,9 +84,11 @@ def _row_counts(from_arr, to_arr, reg_arr, *, q_from, q_reg, n_states) -> np.nda
 def walk_forward_forecast(s: WFSeries, *, model: str = "conditional",
                           min_train: int = 120, prior: float = 1.0,
                           n_dirichlet: int = 300, ci: float = 0.90,
+                          shrink_tau: float = 20.0,
                           rng: Optional[np.random.Generator] = None) -> pd.DataFrame:
     """Return one row per evaluated month with the predicted distribution, its
-    confidence band, and the realized outcome."""
+    confidence band, and the realized outcome. ``shrink_tau`` is the
+    empirical-Bayes shrinkage strength for model='conditional_shrunk'."""
     rng = rng or np.random.default_rng(0)
     n = len(s.state)
     n_states = s.rate_space.n
@@ -99,16 +101,38 @@ def walk_forward_forecast(s: WFSeries, *, model: str = "conditional",
     rows = []
     for i in range(min_train, n):
         q_from = s.state[i - 1]
-        q_reg = s.regime[i - 1] if model == "conditional" else None
         actual = s.state[i]
         # past-only transitions: those completed before month i (k+1 <= i-1)
         end = i - 1
         if model == "climatology":
             counts = np.bincount(s.state[:i], minlength=n_states).astype(float)
-        else:
+            alpha = counts + prior
+        elif model == "unconditional":
             counts = _row_counts(from_arr[:end], to_arr[:end], reg_arr[:end],
-                                 q_from=q_from, q_reg=q_reg, n_states=n_states)
-        alpha = counts + prior
+                                 q_from=q_from, q_reg=None, n_states=n_states)
+            alpha = counts + prior
+        elif model == "conditional":
+            counts = _row_counts(from_arr[:end], to_arr[:end], reg_arr[:end],
+                                 q_from=q_from, q_reg=s.regime[i - 1], n_states=n_states)
+            alpha = counts + prior
+        elif model == "conditional_shrunk":
+            # Empirical-Bayes shrinkage: pull the (sparse) regime-specific row
+            # toward the pooled unconditional row. The pooled distribution acts
+            # as the Dirichlet prior with strength shrink_tau pseudo-counts, so
+            # a data-rich regime keeps its own estimate while a data-poor regime
+            # falls back to the unconditional chain. shrink_tau -> 0 recovers
+            # raw conditional; shrink_tau -> inf recovers unconditional.
+            reg_counts = _row_counts(from_arr[:end], to_arr[:end], reg_arr[:end],
+                                     q_from=q_from, q_reg=s.regime[i - 1], n_states=n_states)
+            pooled = _row_counts(from_arr[:end], to_arr[:end], reg_arr[:end],
+                                 q_from=q_from, q_reg=None, n_states=n_states)
+            pooled_prob = (pooled + prior) / (pooled + prior).sum()
+            alpha = reg_counts + shrink_tau * pooled_prob
+            counts = reg_counts
+        else:
+            raise ValueError(f"unknown model {model!r}")
+        if alpha.sum() <= 0:        # degenerate (e.g. tau=0 with an empty row)
+            alpha = np.ones(n_states)
         probs = alpha / alpha.sum()
         draws = rng.dirichlet(alpha, n_dirichlet)
         lo = np.percentile(draws, lo_q, axis=0)
@@ -156,46 +180,87 @@ def score_forecasts(df: pd.DataFrame, n_states: int) -> Dict:
     }
 
 
+def tau_sweep(s: WFSeries, taus, *, min_train: int = 120, n_dirichlet: int = 1,
+              rng: Optional[np.random.Generator] = None) -> List[Dict]:
+    """Out-of-sample log-loss of the shrunk conditional model across shrinkage
+    strengths. tau=0 is raw conditional; large tau approaches unconditional.
+    If an interior tau beats both ends, shrinkage recovered a real CPI signal."""
+    rng = rng or np.random.default_rng(0)
+    out = []
+    for tau in taus:
+        df = walk_forward_forecast(s, model="conditional_shrunk", min_train=min_train,
+                                   n_dirichlet=n_dirichlet, shrink_tau=float(tau), rng=rng)
+        sc = score_forecasts(df, s.rate_space.n)
+        out.append({"tau": float(tau), "log_loss": sc["mean_log_loss"],
+                    "brier": sc["brier"], "accuracy": sc["accuracy"]})
+    return out
+
+
 def compare_models(s: WFSeries, *, min_train: int = 120, n_dirichlet: int = 200,
+                   shrink_tau: float = 20.0,
                    rng: Optional[np.random.Generator] = None) -> Dict:
-    """Run all three models over the same evaluation window and score them.
-    The headline comparisons: does the chain beat climatology, and does
-    conditioning on CPI beat the unconditional chain?"""
+    """Run the models over the same evaluation window and score them. Headline
+    comparisons: does the chain beat climatology; does raw CPI conditioning beat
+    the unconditional chain; and does empirical-Bayes shrinkage of the CPI
+    conditioning recover any edge?"""
     rng = rng or np.random.default_rng(0)
     out = {}
     for model in ("climatology", "unconditional", "conditional"):
         df = walk_forward_forecast(s, model=model, min_train=min_train,
                                    n_dirichlet=n_dirichlet, rng=rng)
         out[model] = score_forecasts(df, s.rate_space.n)
-    # lift of conditioning on CPI (lower log-loss is better)
-    cu, cc = out["unconditional"]["mean_log_loss"], out["conditional"]["mean_log_loss"]
+    df_sh = walk_forward_forecast(s, model="conditional_shrunk", min_train=min_train,
+                                  n_dirichlet=n_dirichlet, shrink_tau=shrink_tau, rng=rng)
+    out["conditional_shrunk"] = score_forecasts(df_sh, s.rate_space.n)
+    out["conditional_shrunk"]["shrink_tau"] = shrink_tau
+
+    cu = out["unconditional"]["mean_log_loss"]
+    cc = out["conditional"]["mean_log_loss"]
+    cs = out["conditional_shrunk"]["mean_log_loss"]
     cl = out["climatology"]["mean_log_loss"]
     out["summary"] = {
         "eval_points": out["conditional"]["n"],
         "chain_beats_climatology": bool(cu < cl),
-        "cpi_conditioning_helps": bool(cc < cu),
-        "logloss_climatology": cl, "logloss_unconditional": cu, "logloss_conditional": cc,
-        "logloss_lift_from_cpi_pct": round((cu - cc) / cl * 100, 2) if cl else None,
+        "raw_cpi_conditioning_helps": bool(cc < cu),
+        "shrunk_cpi_conditioning_helps": bool(cs < cu),
+        "shrinkage_beats_raw_conditional": bool(cs < cc),
+        "logloss_climatology": cl, "logloss_unconditional": cu,
+        "logloss_conditional_raw": cc, "logloss_conditional_shrunk": cs,
+        "shrink_tau": shrink_tau,
     }
     return out
 
 
-def nowcast(s: WFSeries, *, model: str = "conditional", prior: float = 1.0,
-            n_dirichlet: int = 2000, ci: float = 0.90,
+def nowcast(s: WFSeries, *, model: str = "conditional_shrunk", prior: float = 1.0,
+            shrink_tau: float = 50.0, n_dirichlet: int = 2000, ci: float = 0.90,
             rng: Optional[np.random.Generator] = None) -> Dict:
     """The live, forward-looking call: predict the NEXT month's increment from
-    all available data, with a confidence interval. No score (no actual yet)."""
+    all available data, with a confidence interval. Defaults to the best
+    validated model (CPI-conditional with empirical-Bayes shrinkage). No score
+    (no actual yet)."""
     rng = rng or np.random.default_rng(0)
     n_states = s.rate_space.n
     q_from = s.state[-1]
-    q_reg = s.regime[-1] if model == "conditional" else None
     from_arr, to_arr, reg_arr = s.state[:-1], s.state[1:], s.regime[:-1]
     if model == "climatology":
         counts = np.bincount(s.state, minlength=n_states).astype(float)
+        alpha = counts + prior
+    elif model == "unconditional":
+        counts = _row_counts(from_arr, to_arr, reg_arr, q_from=q_from, q_reg=None, n_states=n_states)
+        alpha = counts + prior
+    elif model == "conditional":
+        counts = _row_counts(from_arr, to_arr, reg_arr, q_from=q_from, q_reg=s.regime[-1], n_states=n_states)
+        alpha = counts + prior
+    elif model == "conditional_shrunk":
+        reg_counts = _row_counts(from_arr, to_arr, reg_arr, q_from=q_from, q_reg=s.regime[-1], n_states=n_states)
+        pooled = _row_counts(from_arr, to_arr, reg_arr, q_from=q_from, q_reg=None, n_states=n_states)
+        pooled_prob = (pooled + prior) / (pooled + prior).sum()
+        alpha = reg_counts + shrink_tau * pooled_prob
+        counts = reg_counts
     else:
-        counts = _row_counts(from_arr, to_arr, reg_arr, q_from=q_from,
-                             q_reg=q_reg, n_states=n_states)
-    alpha = counts + prior
+        raise ValueError(f"unknown model {model!r}")
+    if alpha.sum() <= 0:
+        alpha = np.ones(n_states)
     probs = alpha / alpha.sum()
     draws = rng.dirichlet(alpha, n_dirichlet)
     lo_q, hi_q = (1 - ci) / 2 * 100, (1 + ci) / 2 * 100

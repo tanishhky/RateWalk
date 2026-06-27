@@ -57,11 +57,25 @@ def test_walk_forward_is_no_lookahead():
 def test_compare_models_and_scoring():
     s, _ = _series("2015-01-01")
     out = compare_models(s, min_train=60, n_dirichlet=50, rng=np.random.default_rng(0))
-    for m in ("climatology", "unconditional", "conditional"):
+    for m in ("climatology", "unconditional", "conditional", "conditional_shrunk"):
         assert out[m]["n"] > 0
         assert 0.0 <= out[m]["accuracy"] <= 1.0
         assert out[m]["mean_log_loss"] > 0
-    assert "chain_beats_climatology" in out["summary"]
+    assert "shrunk_cpi_conditioning_helps" in out["summary"]
+
+
+def test_shrinkage_interpolates_conditional_to_unconditional():
+    """Large shrink_tau must drive the shrunk conditional model to the
+    unconditional chain (the pooled prior dominates)."""
+    from ratewalk.walkforward.forecast import walk_forward_forecast, score_forecasts
+    s, _ = _series("2018-01-01")
+    big = walk_forward_forecast(s, model="conditional_shrunk", min_train=60,
+                                shrink_tau=1e6, n_dirichlet=1, rng=np.random.default_rng(0))
+    unc = walk_forward_forecast(s, model="unconditional", min_train=60,
+                                n_dirichlet=1, rng=np.random.default_rng(0))
+    # at huge tau the shrunk row is ~ the pooled (unconditional) row
+    for a, b in zip(big["probs"], unc["probs"]):
+        assert np.allclose(a, b, atol=2e-3)
 
 
 def test_nowcast_is_a_distribution_with_ci():
