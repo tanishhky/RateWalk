@@ -263,6 +263,16 @@ def run_walkforward(cfg, *, min_train: int = 120) -> dict:
     sweep = tau_sweep(s, [0, 5, 10, 20, 50, 100, 200, 500], min_train=min_train, rng=rng)
     live = nowcast(s, model="conditional_shrunk", shrink_tau=SHRINK_TAU, rng=rng)
     backtest = duration_backtest(s, md.curve, min_train=min_train)
+    # Model vs the market's own pricing (curve-implied proxy), the question
+    # any rates desk asks first. Sub-1y curve data is US-only on FRED, so
+    # this block is skipped where the proxy cannot be built.
+    market_eval = None
+    try:
+        from .walkforward import compare_with_market
+        market_eval = compare_with_market(s, md, min_train=min_train, rng=rng)
+    except Exception as exc:  # noqa: BLE001
+        obs.event(channel="walkforward", kind="market_compare_skip",
+                  level="WARNING", err=str(exc))
     return {
         "config_hash": cfg.content_hash(),
         "country": cfg.country,
@@ -272,6 +282,7 @@ def run_walkforward(cfg, *, min_train: int = 120) -> dict:
         "tau_sweep": sweep,
         "nowcast": live,
         "duration_backtest": backtest,
+        "market_benchmark": market_eval,
     }
 
 

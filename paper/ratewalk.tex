@@ -25,13 +25,17 @@ I ask whether a memoryless Markov chain on the Federal Reserve's policy moves ca
 forecast the next rate decision out of sample, and whether conditioning the chain
 on the inflation regime improves it. Under strict no-look-ahead discipline, with
 CPI read at its real ALFRED release date so revisions never leak, the answer is a
-clean bias--variance story. A first-order chain beats a climatology baseline.
+clean bias-variance story. A first-order chain beats a climatology baseline.
 \emph{Naive} conditioning on the CPI regime overfits and \emph{hurts}, because it
 splits sparse transition data across regimes. Shrinking each regime row toward the
-pooled chain---an empirical-Bayes Dirichlet prior---recovers a small but consistent
+pooled chain (an empirical-Bayes Dirichlet prior) recovers a small but consistent
 edge that \emph{replicates across the United States, the United Kingdom, and
 Germany}, survives a data-driven shrinkage strength, and sits on a broad parameter
-plateau rather than a tuned point. The edge lives in probabilistic calibration: a
+plateau rather than a tuned point. Against the market's own pricing, proxied by a
+walk-forward-calibrated Treasury-curve signal, the chain wins overall (log-loss
+$1.06$ vs.\ $1.20$) but the decomposition is sharper: the market is better on
+$82\%$ of actual move months, the chain on $85\%$ of holds, and a no-look-ahead
+adaptive blend beats both. The edge lives in probabilistic calibration: a
 duration-timing strategy built on the signal does not beat a constant-duration
 benchmark risk-adjusted. I report the negatives as part of the result.
 \end{abstract}
@@ -48,7 +52,7 @@ roughly four of five months, by up to a few tenths of a point (Figure~\ref{fig:d
 
 \section{Data and states}
 I use the daily effective policy rate, the curve, and CPI from FRED for the US,
-UK, and Germany, 1990--2026. The monthly rate change is snapped to the FOMC move
+UK, and Germany, 1990-2026. The monthly rate change is snapped to the FOMC move
 grid $\{-50,-25,0,+25,+50,+75\}$ bps; CPI year-over-year is binned into five
 inflation regimes. A first-order chain is the matrix $P(\text{next move} \mid
 \text{current move})$; the conditional chain adds the regime,
@@ -59,7 +63,7 @@ transition structure in the companion notebook).
 \begin{figure}[t]
 \centering
 \includegraphics[width=\textwidth]{figs/data.png}
-\caption{US policy rate and initial-release CPI year-over-year, 1990--2026. Using
+\caption{US policy rate and initial-release CPI year-over-year, 1990-2026. Using
 the revised CPI instead of the initial release would leak information unavailable
 at decision time.}
 \label{fig:data}
@@ -84,7 +88,7 @@ pseudo-counts,
 \]
 so that $\tau \to 0$ recovers the raw conditional model and $\tau \to \infty$ the
 unconditional one. A sweep (Figure~\ref{fig:tau}) shows a broad interior plateau,
-$\tau \approx 20$--$500$, over which the shrunk conditional model \emph{beats the
+$\tau \approx 20$ to $500$, over which the shrunk conditional model \emph{beats the
 unconditional chain}. The macro signal was real; it was drowned in variance, and
 regularization recovered it.
 
@@ -98,17 +102,17 @@ plateau, not a tuned point.}
 \end{figure}
 
 \section{Robustness}
-\textbf{Replication.} The pattern---raw conditioning hurts, shrinkage helps---holds
+\textbf{Replication.} The pattern (raw conditioning hurts, shrinkage helps) holds
 in all three sovereigns (Table~\ref{tab:results}, Figure~\ref{fig:rep}).
 \textbf{No tuned $\tau$.} A fully data-driven empirical-Bayes $\tau$, estimated
 per-step from past-only data by maximizing the Dirichlet-multinomial marginal
 likelihood, also beats the unconditional chain in all three with no tuning; it is
 marginally worse than a fixed moderate $\tau$ only because it is conservative when
 early data is thin, then adapts (settling near $130$ for the US, $300$ for the UK,
-and $17$ for Germany---German decisions are the most regime-dependent).
+and $17$ for Germany; German decisions are the most regime-dependent).
 \textbf{Cadence is not the lever.} Re-running at the Fed's roughly eight-meeting
 annual cadence rather than monthly does not systematically help; even at meeting
-frequency $60$--$80\%$ of decisions are holds, because policy is intrinsically
+frequency $60$ to $80\%$ of decisions are holds, because policy is intrinsically
 sticky.
 
 \begin{table}[t]
@@ -157,15 +161,70 @@ bond risk-adjusted.}
 \label{fig:bt}
 \end{figure}
 
+\section{Does it beat the market?}
+The question any rates desk asks of a policy model. Fed funds futures are the
+canonical market forecast but are not freely available historically, so I build
+the standard free proxy from the short end of the Treasury curve: the spread
+between the 3-month bill yield and the current policy rate carries the market's
+directional view of upcoming policy. To avoid hardcoding how many basis points
+of next-month move a given spread implies, the mapping is itself calibrated
+walk-forward: at each date I regress realized next-period moves on past spreads
+(past pairs only), predict the mean move from the current spread, estimate the
+residual scale from past errors only, and integrate a normal over the move grid.
+The market proxy is then scored with exactly the same out-of-sample log-loss,
+over exactly the same 319 monthly decisions, as the Markov models.
+
+Three results (Figure~\ref{fig:market}, top). First, the shrunk chain beats the
+curve proxy overall: mean log-loss $1.063$ versus $1.199$. Second, and more
+interesting, the two contain \emph{complementary} information
+(Figure~\ref{fig:market}, bottom left): on the $83$ months where the Fed
+actually moved, the market proxy is the better forecaster $82\%$ of the time,
+while on the $236$ hold months the chain is better $85\%$ of the time. The
+cumulative-loss path shows the same structure in time: the curve proxy led
+through the 2000s hiking and cutting cycles, and the chain's advantage is
+earned almost entirely in the post-2009 hold-dominated era. The chain knows
+that policy is sticky; the curve knows when something is coming.
+
+Third, the natural consequence: a parameter-free combination beats both. I pool
+the two forecasts linearly with weights set, at each date, by the components'
+inverse mean log-loss on already-realized decisions only (no tuned constant, no
+look-ahead), giving mean log-loss $1.056$ and top-choice accuracy $72.7\%$
+versus $68.7\%$ for the chain alone.
+
+Honesty notes. The proxy is a curve-implied approximation of the futures
+strip, handicapped by a single linear calibration; the right reading is
+``the chain beats a reasonable free proxy of market pricing and complements
+it,'' not ``the chain beats the market.'' A test against actual fed funds
+futures is the natural extension, and the moves/holds decomposition predicts
+what it would show: the market's edge concentrates exactly where positioning
+matters most.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\textwidth]{figs/market_cumll.png}\\[4pt]
+\includegraphics[width=0.48\textwidth]{figs/market_decomp.png}\hfill
+\includegraphics[width=0.40\textwidth]{figs/market_reliability.png}
+\caption{Model versus curve-implied market proxy, out of sample (US, 319
+monthly decisions). Top: cumulative log-loss; the proxy led through the 2000s
+cycle era, the chain wins the post-2009 hold era, and the adaptive blend tracks
+the better of the two. Bottom left: the market is the better forecaster on
+move months, the chain on hold months. Bottom right: both P(hold) forecasts
+are roughly calibrated, with the chain tighter at high confidence.}
+\label{fig:market}
+\end{figure}
+
 \section{Conclusion}
 A memoryless Markov chain on Fed moves beats climatology out of sample; naive
 inflation conditioning overfits; empirical-Bayes shrinkage recovers a small,
-consistent, cross-country edge; cadence is not the lever; and the edge is in
-calibration rather than a tradeable strategy. Every result is reproducible from a
-seed under strict no-look-ahead with point-in-time CPI, and the honest negatives
-are part of the finding. Natural extensions are the exact published FOMC calendar
-(to settle the cadence question), a term-structure factor model for the curve, and
-a richer mapping from forecast to position.
+consistent, cross-country edge; cadence is not the lever; the chain beats a
+curve-implied proxy of market pricing overall while the proxy wins precisely on
+move months, and a no-look-ahead adaptive blend of the two beats both; and the
+edge is in calibration rather than a tradeable strategy. Every result is
+reproducible from a seed under strict no-look-ahead with point-in-time CPI, and
+the honest negatives are part of the finding. Natural extensions are the exact
+published FOMC calendar (to settle the cadence question), actual fed funds
+futures as the market benchmark, and a richer mapping from forecast to
+position.
 
 \vspace{4pt}
 \noindent\footnotesize\textcolor{gray}{Code, the executable research notebook, and

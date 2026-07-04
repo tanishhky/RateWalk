@@ -63,6 +63,28 @@ The duration-timing strategy built on the signal still does **not** beat a
 constant-2y bond risk-adjusted (Sharpe 1.06 vs 1.39), which is an honest
 negative. See DESIGN.md for what would move that.
 
+### Does it beat the market? (new 2026-07)
+
+The question any rates desk asks first. Against a walk-forward-calibrated
+curve-implied proxy of market pricing (3m bill minus policy rate, mapped to a
+move distribution with past-only regression, no hardcoded scaling), over the
+same 319 out-of-sample decisions:
+
+| forecaster | US log-loss | accuracy |
+|---|---|---|
+| curve-implied market proxy | 1.199 | 54.6% |
+| shrunk Markov chain (EB) | 1.063 | 68.7% |
+| **adaptive blend (parameter-free)** | **1.056** | **72.7%** |
+
+The decomposition is the real finding: **the market proxy is better on 82% of
+actual move months; the chain is better on 85% of hold months.** The chain
+knows policy is sticky; the curve knows when something is coming. A no-lookahead
+linear pool weighted by realized past log-loss beats both. Honest caveat: this
+is a free proxy of the futures strip, not the strip itself; the right claim is
+"beats and complements a reasonable market proxy," not "beats the market."
+Figures in `paper/figs/market_*.png`; reproduce with
+`python scripts/make_market_figures.py`.
+
 ### Real data (FRED / ALFRED)
 
 Put a free [FRED API key](https://fredaccount.stlouisfed.org/apikeys) in `.env`:

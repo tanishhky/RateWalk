@@ -11,3 +11,6 @@ from .forecast import (  # noqa: F401
     prepare_series, walk_forward_forecast, score_forecasts, compare_models, nowcast,
 )
 from .backtest import duration_backtest  # noqa: F401
+from .market_benchmark import (  # noqa: F401
+    market_signal, walk_forward_market, blend_adaptive, compare_with_market,
+)
