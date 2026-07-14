@@ -1,23 +1,35 @@
 \documentclass[11pt]{article}
 \usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
 \usepackage{graphicx}
 \usepackage{booktabs}
-\usepackage{amsmath}
 \usepackage{xcolor}
 \usepackage{caption}
+\usepackage{float}
+\usepackage{enumitem}
+\usepackage{natbib}
+\usepackage{fancyhdr}
 \usepackage[hidelinks]{hyperref}
 \usepackage{titlesec}
-\titleformat{\section}{\large\bfseries}{\thesection}{0.6em}{}
-\captionsetup{font=small, labelfont=bf}
+
 \definecolor{accent}{HTML}{B07D1F}
+\titleformat{\section}{\large\bfseries\color{accent}}{\thesection}{0.6em}{}
+\captionsetup{font=small, labelfont=bf}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\footnotesize\itshape RateWalk}
+\fancyhead[R]{\footnotesize\thepage}
+\renewcommand{\headrulewidth}{0.3pt}
 
 \title{\textbf{RateWalk: Forecasting Fed Rate Decisions with a Shrunk Markov Chain}\\[2pt]
 \large An out-of-sample, point-in-time study of whether inflation regimes help}
 \author{Tanishk Yadav\\\small MS Financial Engineering, New York University\\\small \texttt{tanishkyadav@nyu.edu}}
-\date{June 2026}
+\date{July 2026}
 
 \begin{document}
 \maketitle
+\thispagestyle{fancy}
 
 \begin{abstract}
 \noindent
@@ -225,10 +237,5 @@ the honest negatives are part of the finding. Natural extensions are the exact
 published FOMC calendar (to settle the cadence question), actual fed funds
 futures as the market benchmark, and a richer mapping from forecast to
 position.
-
-\vspace{4pt}
-\noindent\footnotesize\textcolor{gray}{Code, the executable research notebook, and
-this paper: \texttt{github.com/tanishhky/RateWalk}. Research software, not
-investment advice.}
 
 \end{document}
