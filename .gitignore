@@ -9,3 +9,10 @@ runs/
 logs/
 *.parquet
 .DS_Store
+
+# LaTeX build artifacts
+paper/*.aux
+paper/*.fls
+paper/*.fdb_latexmk
+paper/*.log
+paper/*.out
