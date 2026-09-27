@@ -150,8 +150,7 @@ src/ratewalk/
   surprise -> diagnosis -> shrinkage fix -> robustness -> honest negatives), with
   outputs and figures generated from live FRED data.
 - [`paper/ratewalk.pdf`](./paper/ratewalk.pdf) - a short working paper of the
-  same study. Submitted to SSRN, currently under editorial review:
-  [Abstract ID 7119438](https://papers.ssrn.com/sol3/papers.cfm?abstract_id=7119438).
+  same study (working paper, not peer reviewed).
 
 See [DESIGN.md](./DESIGN.md) for the methodology, the modeling decisions, and
 the planned extensions. This is research software, not investment advice.
