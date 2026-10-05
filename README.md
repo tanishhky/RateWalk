@@ -2,6 +2,8 @@
 
 ![tests](https://github.com/tanishhky/RateWalk/actions/workflows/tests.yml/badge.svg)
 
+**Paper, figures and summary:** [tanishkyadav.me/research/ratewalk](https://www.tanishkyadav.me/research/ratewalk)
+
 **A Markov-driven Monte Carlo engine for fixed-income path simulation, risk, and hedging.**
 
 RateWalk learns how the monetary regime moves (policy rate and CPI) as a Markov
